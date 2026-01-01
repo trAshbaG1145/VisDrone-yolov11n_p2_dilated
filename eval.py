@@ -7,7 +7,7 @@
 - 生成评估曲线和混淆矩阵
 
 【主要功能】
-1. 计算核心指标：mAP@0.5、mAP@0.5:0.95、Precision、Recall
+1. 计算核心指标：mAP@0.5、mAP@0.5:0.95、Precision、Recall、FPS
 2. 输出各类别 AP：VisDrone 10 类目标的详细性能
 3. 生成可视化：PR 曲线、混淆矩阵、预测示例
 4. 支持 CLI 参数：灵活指定模型、数据集、设备等
@@ -20,10 +20,10 @@
 
 【用法】
   # 评估最佳模型
-  python eval.py --model runs/ablation/3_yolov11n_p2_dilated/weights/best.pt
+  python eval.py
   
   # 评估其他模型
-  python eval.py --model runs/ablation/1_baseline_yolov11n/weights/best.pt --batch 8
+  python eval.py --model runs/ablation/1_baseline_yolov11n/weights/best.pt
   
   # 在测试集上评估
   python eval.py --model <model_path> --split test --device 0

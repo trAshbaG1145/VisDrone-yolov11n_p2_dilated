@@ -7,10 +7,9 @@ SAHI 推理对比脚本 - 演示 SAHI 切片推理 vs 原生 YOLO 推理的效�
 - 输出可视化结果和检测数量对比
 
 【主要功能】
-1. 方法 1：SAHI 切片推理（适合高分辨率图像，微小目标检测更好）
-2. 方法 2：原生 YOLO 推理（速度快，作为对比基准）
-3. 输出对比：检测框数量、可视化结果、性能对比
-4. 支持 CLI 参数：灵活配置切片大小、重叠率、置信度等
+SAHI 切片推理（适合高分辨率图像，微小目标检测更好）
+原生 YOLO 推理（速度快，作为对比基准）
+支持 CLI 参数：灵活配置切片大小、重叠率、置信度等
 
 【使用场景】
 - 对比 SAHI 和原生推理的效果差异
@@ -25,77 +24,121 @@ SAHI 推理对比脚本 - 演示 SAHI 切片推理 vs 原生 YOLO 推理的效�
   # 自定义参数
   python demo_inference.py \
       --model runs/ablation/3_yolov11n_p2_dilated/weights/best.pt \
-      --image datasets/VisDrone/.../test_image.jpg \
       --slice-height 640 --slice-width 640 \
       --overlap 0.2 --conf 0.25
 
 【输出位置】
-  demo_result/
-  ├── sahi_result.jpg          # SAHI 切片推理结果（微小目标更好）
-  └── native_yolo/predict/     # 原生 YOLO 推理结果（速度更快）
+  demo_result/demo[N]_模型名/
+  ├── native_yolo/              # 原生 YOLO 推理结果
+  └── SAHI/                     # SAHI 切片推理结果
 
-【对比】
-  SAHI 切片推理：
-  - ✅ 微小目标召回率更高（适合高分辨率图像）
-  - ⚠️ 速度较慢（需要切片和合并）
-  
-  原生 YOLO 推理：
-  - ✅ 速度快（直接推理）
-  - ⚠️ 可能漏检微小目标（图像缩放导致信息损失）
 
 【特点】
 - ✅ 双推理模式对比（一次运行得到两种结果）
-- ✅ SAHI 更适合微小目标检测
 - ✅ 输出检测数量对比，便于分析
 - ✅ 支持自定义切片参数和置信度阈值
 """
 import argparse
 import os
 import sys
-from pathlib import Path
+import json
 import random
+import shutil
+import glob
+from pathlib import Path
+import cv2
 import numpy as np
-from ultralytics import YOLO  # type: ignore
+from ultralytics import YOLO # type: ignore
 
 # SAHI 对 YOLOv11 支持不稳定，导入失败时回退到仅原生推理
 try:
     from sahi import AutoDetectionModel
     from sahi.predict import get_sliced_prediction
-except Exception:  # pragma: no cover - 防守性降级
-    AutoDetectionModel = None
-    get_sliced_prediction = None
+    SAHI_AVAILABLE = True
+except ImportError:
+    SAHI_AVAILABLE = False
 
 
 def set_seed(seed: int = 42):
+    """设置随机种子以保证结果可复现"""
     random.seed(seed)
     np.random.seed(seed)
     try:
         import torch
-
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     except Exception:
         pass
 
+def find_best_model(project_dir="runs/ablation"):
+    """
+    从消融实验汇总中寻找 mAP 最高的模型
+    返回: (model_path, message)
+    """
+    summary_path = Path(project_dir) / "results_summary.json"
+    if not summary_path.exists():
+        return None, "未找到汇总文件 (results_summary.json)"
+
+    try:
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            results = json.load(f)
+        
+        if not results:
+            return None, "汇总文件为空"
+
+        # 寻找 mAP@0.5:0.95 最高的实验
+        # results 是个字典: {'1_baseline': {'map': 0.xxx, ...}, ...}
+        best_exp = max(results.items(), key=lambda x: x[1].get('map', 0))
+        best_name = best_exp[0]
+        best_map = best_exp[1].get('map', 0)
+        
+        model_path = Path(project_dir) / best_name / "weights" / "best.pt"
+        if model_path.exists():
+            return str(model_path), f"自动选中最佳模型: {best_name} (mAP={best_map:.4f})"
+        return None, f"最佳模型文件不存在: {model_path}"
+    except Exception as e:
+        return None, str(e)
+
+def get_next_demo_dir(base_dir, model_name):
+    """生成递增的输出目录，如 demo_result/demo1_modelname"""
+    base_path = Path(base_dir)
+    base_path.mkdir(parents=True, exist_ok=True)
+    
+    # 提取纯模型名，去掉路径和后缀
+    clean_model_name = Path(model_name).stem if Path(model_name).exists() else "unknown"
+    # 如果是路径类似 runs/ablation/3_yolov11n.../weights/best.pt，尝试提取 3_yolov11n...
+    try:
+        if "weights" in str(model_name):
+            clean_model_name = Path(model_name).parent.parent.name
+    except:
+        pass
+
+    # 寻找现有的 demo 文件夹
+    existing_dirs = list(base_path.glob("demo*_*"))
+    max_idx = 0
+    for d in existing_dirs:
+        try:
+            # 解析 demoN_ 中的 N
+            idx = int(d.name.split('_')[0].replace('demo', ''))
+            if idx > max_idx:
+                max_idx = idx
+        except:
+            pass
+    
+    new_dir_name = f"demo{max_idx + 1}_{clean_model_name}"
+    return base_path / new_dir_name
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="SAHI + YOLO inference demo")
-    parser.add_argument(
-        "--model",
-        default="runs/ablation/3_yolov11n_p2_dilated/weights/best.pt",
-        help="Path to trained weights",
-    )
-    parser.add_argument(
-        "--image",
-        default="datasets/VisDrone/VisDrone2019-DET-test-dev/images/0000006_00159_d_0000005.jpg",
-        help="Image path for inference",
-    )
-    parser.add_argument("--output", default="demo_result", help="Output directory")
-    parser.add_argument("--slice-height", type=int, default=640, help="Slice height for SAHI")
-    parser.add_argument("--slice-width", type=int, default=640, help="Slice width for SAHI")
-    parser.add_argument("--overlap", type=float, default=0.2, help="Slice overlap ratio")
+    parser = argparse.ArgumentParser(description="SAHI vs Native YOLO Batch Inference")
+    parser.add_argument("--model", default=None, help="Path to model weights (default: auto-select best)")
+    parser.add_argument("--source", default="datasets/VisDrone/VisDrone2019-DET-test-dev/images", help="Path to images dir")
+    parser.add_argument("--num", type=int, default=10, help="Number of random images to test")
+    parser.add_argument("--output", default="demo_result", help="Base output directory")
+    parser.add_argument("--slice-height", type=int, default=640, help="Slice height")
+    parser.add_argument("--slice-width", type=int, default=640, help="Slice width")
+    parser.add_argument("--overlap", type=float, default=0.2, help="Slice overlap")
     parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold")
-    parser.add_argument("--device", default="cuda:0", help="Device id, e.g., 'cuda:0' or 'cpu'")
+    parser.add_argument("--device", default="0", help="Device (cpu/0)")
     return parser.parse_args()
 
 
@@ -103,132 +146,177 @@ def main():
     args = parse_args()
     set_seed()
     
-    # ---------------------------------------------------------
-    # 检查文件
-    # ---------------------------------------------------------
-    if not os.path.exists(args.model):
-        print(f"❌ 错误: 模型文件不存在: {args.model}")
-        print("\n💡 请先运行训练脚本:")
-        print("   python start_train.py")
-        sys.exit(1)
+    print("=" * 60)
+    print("🚀 批量推理对比脚本 (SAHI vs Native)")
+    print("=" * 60)
 
-    image_path = args.image
-    if not os.path.exists(image_path):
-        print(f"⚠️  警告: 测试图像不存在: {image_path}")
-        print("   将尝试使用数据集中的第一张图像...")
-        
-        # 尝试查找任意测试图像
-        test_dir = Path("datasets/VisDrone/VisDrone2019-DET-test-dev/images")
-        if test_dir.exists():
-            images = list(test_dir.glob("*.jpg"))
-            if images:
-                image_path = str(images[0])
-                print(f"✅ 找到测试图像: {image_path}")
-            else:
-                print("❌ 错误: 未找到任何测试图像")
-                sys.exit(1)
+    # ---------------------------------------------------------
+    # 1. 确定模型路径
+    # ---------------------------------------------------------
+    model_path = args.model
+    if model_path is None:
+        print("🔍 用户未指定模型，正在寻找最佳模型...")
+        found_path, msg = find_best_model()
+        if found_path:
+            print(f"✅ {msg}")
+            model_path = found_path
         else:
-            print("❌ 错误: 数据集目录不存在")
-            print("\n💡 请先运行训练脚本下载数据集:")
-            print("   python start_train.py")
-            sys.exit(1)
-    
-    # 创建输出目录
-    os.makedirs(args.output, exist_ok=True)
-    
-    print("=" * 60)
-    print("🔍 SAHI 切片推理演示")
-    print("=" * 60)
-    print(f"📦 模型: {args.model}")
-    print(f"🖼️  图像: {image_path}")
-    print(f"✂️  切片大小: {args.slice_height}x{args.slice_width}")
-    print(f"🔗 重叠率: {args.overlap * 100}%")
-    print(f"🎯 置信度阈值: {args.conf}")
-    print("=" * 60)
-    
+            # 回退到默认的 P2+Dilated 路径 (假设它存在)
+            default_fallback = "runs/ablation/1_baseline_yolov11n/weights/best.pt"
+            print(f"⚠️ 自动寻找失败 ({msg})")
+            print(f"🔄 回退使用默认路径: {default_fallback}")
+            model_path = default_fallback
+            
+    if not os.path.exists(model_path):
+        print(f"❌ 错误: 模型文件不存在: {model_path}")
+        print("💡 请先运行训练脚本: python ablation_study.py train all")
+        return
+
     # ---------------------------------------------------------
-    # 方法 1: 使用 SAHI (推荐用于高分辨率图像)
+    # 2. 准备图片数据
     # ---------------------------------------------------------
-    print("\n🚀 方法 1: SAHI 切片推理 (适用于微小目标)")
+    source_dir = Path(args.source)
+    if not source_dir.exists():
+        print(f"❌ 图片目录不存在: {source_dir}")
+        print("💡 请检查 VisDrone 数据集路径，或运行 convert_visdrone_to_yolo.py 确认数据")
+        return
+        
+    # 获取目录下所有图片
+    all_images = list(source_dir.glob("*.jpg")) + list(source_dir.glob("*.png"))
+    if not all_images:
+        print(f"❌ 目录下没有找到图片: {source_dir}")
+        return
+        
+    # 随机抽取 N 张
+    num_samples = min(args.num, len(all_images))
+    selected_images = random.sample(all_images, num_samples)
+    print(f"📂 已从 {source_dir} 随机选中 {num_samples} 张图片进行测试")
+
+    # ---------------------------------------------------------
+    # 3. 准备输出目录
+    # ---------------------------------------------------------
+    # 生成如 demo_result/demo1_1_baseline_yolov11n
+    out_root = get_next_demo_dir(args.output, model_path)
+    
+    # 创建子目录
+    sahi_dir = out_root / "SAHI"
+    native_dir = out_root / "native_yolo"
+    
+    sahi_dir.mkdir(parents=True, exist_ok=True)
+    native_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"📁 结果将保存至: {out_root}")
     print("-" * 60)
 
-    if AutoDetectionModel is None or get_sliced_prediction is None:
-        print("⚠️ 未安装或无法导入 SAHI，跳过切片推理，直接使用原生 YOLO。")
-    else:
+    # ---------------------------------------------------------
+    # 4. 初始化模型
+    # ---------------------------------------------------------
+    print("🔨 加载 Native YOLO 模型...")
+    try:
+        yolo_model = YOLO(model_path)
+    except Exception as e:
+        print(f"❌ 模型加载失败: {e}")
+        return
+    
+    # 初始化 SAHI 模型
+    sahi_model = None
+    if SAHI_AVAILABLE:
         try:
-            # YOLOv11 可能与 SAHI 的 yolov8 接口不完全兼容；失败时降级
-            detection_model = AutoDetectionModel.from_pretrained(
-                model_type="ultralytics",  # 优先使用 ultralytics 适配
-                model_path=args.model,
+            print("🔨 加载 SAHI 模型接口...")
+            sahi_model = AutoDetectionModel.from_pretrained(
+                model_type="ultralytics",
+                model_path=model_path,
                 confidence_threshold=args.conf,
-                device=args.device,
+                device=args.device
             )
         except Exception as e:
             print(f"⚠️ SAHI 加载失败: {e}")
-            print("   将跳过 SAHI，继续原生 YOLO 推理。")
-        else:
+    else:
+        print("⚠️ 未安装 SAHI，将跳过 SAHI 推理")
+
+    # ---------------------------------------------------------
+    # 5. 循环批量推理
+    # ---------------------------------------------------------
+    print("\n🚀 开始批量推理...")
+    for i, img_path in enumerate(selected_images):
+        img_name = img_path.name
+        img_stem = img_path.stem # 无后缀的文件名
+        print(f"[{i+1}/{num_samples}] 处理: {img_name}")
+        native_count = 0
+        sahi_count = 0
+        
+        # --- A. Native YOLO 推理 ---
+        try:
+            # 使用 plot() 获取可视化结果图 (numpy array)，完全自定义保存
+            # verbose=False 关闭每张图的打印刷屏
+            res = yolo_model.predict(
+                str(img_path), 
+                conf=args.conf, 
+                imgsz=640, 
+                device=args.device, 
+                verbose=False
+            )[0]
+            
+            boxes = getattr(res, "boxes", None)
+            native_count = len(boxes) if boxes is not None else 0
+            # 绘制检测框
+            im_array = res.plot()
+            
+            # 保存文件: native_yolo/result_xxx.jpg
+            native_out_file = native_dir / f"result_{img_name}"
+            cv2.imwrite(str(native_out_file), im_array)
+            
+        except Exception as e:
+            print(f"  ❌ Native 推理出错: {e}")
+
+        # --- B. SAHI 推理 ---
+        if sahi_model:
             try:
-                print("正在执行切片推理...")
                 result = get_sliced_prediction(
-                    image_path,
-                    detection_model,
+                    str(img_path),
+                    sahi_model,
                     slice_height=args.slice_height,
                     slice_width=args.slice_width,
                     overlap_height_ratio=args.overlap,
                     overlap_width_ratio=args.overlap,
-                    verbose=1
+                    verbose=0 # 关闭刷屏
                 )
-                result.export_visuals(export_dir=args.output)
-                print(f"✅ SAHI 推理完成! 检测到 {len(result.object_prediction_list)} 个目标")
-                print(f"📁 结果已保存到: {args.output}/")
+                sahi_count = len(getattr(result, "object_prediction_list", []) or [])
+                
+                # SAHI 的 export_visuals 会自动保存为 {file_name}.jpg
+                # 我们先让它保存，然后重命名
+                result.export_visuals(export_dir=str(sahi_dir), file_name=img_stem)
+                
+                # 寻找刚才生成的文件 (可能是 .jpg 或 .png)
+                # SAHI 有时会改变后缀
+                generated_candidates = list(sahi_dir.glob(f"{img_stem}.*"))
+                
+                if generated_candidates:
+                    generated_file = generated_candidates[0]
+                    # 重命名为 result_{原文件名}
+                    # 注意保持后缀一致
+                    final_name = f"result_{img_name}"
+                    # 如果原图是jpg，生成了png，这里简单起见，我们保留生成文件的后缀，但文件名前缀改为 result_
+                    # 比如原图 a.jpg -> 生成 a.png -> 重命名为 result_a.png
+                    
+                    target_file = sahi_dir / f"result_{generated_file.name}"
+                    
+                    # 覆盖旧文件(如果存在)
+                    if target_file.exists():
+                        target_file.unlink()
+                        
+                    generated_file.rename(target_file)
+                
             except Exception as e:
-                print(f"⚠️ SAHI 推理失败: {e}")
-                print("   将跳过 SAHI，继续原生 YOLO 推理。")
-    
-    # ---------------------------------------------------------
-    # 方法 2: 原生 YOLO 推理 (对比基准)
-    # ---------------------------------------------------------
-    print("\n🚀 方法 2: 原生 YOLO 推理 (无切片)")
-    print("-" * 60)
-    
-    try:
-        model = YOLO(args.model)
-        
-        # 直接推理
-        print("正在执行标准推理...")
-        results = model.predict(
-            image_path,
-            conf=args.conf,
-            imgsz=640,
-            save=True,
-            project=args.output,
-            name="native_yolo",
-            exist_ok=True
-        )
+                print(f"  ❌ SAHI 推理出错: {e}")
 
-        # YOLO 结果中 boxes 可能为空，安全地统计检测数量
-        det_count = 0
-        if results and results[0].boxes is not None:
-            det_count = len(results[0].boxes)
+        print(f"处理完毕，原生YOLO检测到{native_count}个目标，SAHI检测到{sahi_count}个目标；")
 
-        print(f"✅ 原生推理完成! 检测到 {det_count} 个目标")
-        print(f"📁 结果已保存到: {args.output}/native_yolo/")
-        
-    except Exception as e:
-        print(f"❌ 原生推理失败: {e}")
-    
-    # ---------------------------------------------------------
-    # 结果对比
-    # ---------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("📊 推理结果对比")
     print("=" * 60)
-    print("💡 建议:")
-    print("   - SAHI 方法适用于高分辨率图像 (>1920x1080)")
-    print("   - 原生方法更快，但可能漏检微小目标")
-    print("   - 对比两种方法的检测框数量和位置")
-    print("\n✅ 演示完成! 请查看输出目录:")
-    print(f"   {os.path.abspath(args.output)}")
+    print("✅ 所有推理完成！")
+    print(f"👉 结果目录: {out_root}")
+    print("   ├── native_yolo/  (原生缩放推理)")
+    print("   └── SAHI/         (SAHI 切片推理)")
     print("=" * 60)
 
 if __name__ == "__main__":

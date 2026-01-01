@@ -30,3 +30,4 @@ pytorch_model.bin
 /datasets/
 /runs/
 *.pt
+/demo_result/
