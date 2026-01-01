@@ -29,6 +29,18 @@ CV/Project/
 pip install ultralytics sahi opencv-python pillow tqdm numpy
 ```
 > SAHI 对 YOLOv11 支持有限；脚本会在不兼容时自动跳过 SAHI，继续原生 YOLO 推理。
+## 数据集介绍
+本项目使用 **VisDrone-DET2019** 数据集，这是无人机航拍目标检测领域的权威数据集，专门用于应对“图大物小”和“背景复杂”的检测挑战。
+
+- **数据来源**：[VisDrone-DET2019](http://aiskyeye.com/)
+- **数据规模**：共包含 10,209 张静态图像（6,471 张训练集 / 548 张验证集 / 3,190 张测试集）。
+- **场景特点**：
+  - **高分辨率**：图像尺寸通常较大（如 2000×1500），包含大量微小目标（< 32×32 像素）。
+  - **复杂环境**：涵盖不同天气、光照条件下，以及拥挤的城市道路、广场等场景。
+- **目标类别** (10类)：
+  `pedestrian` (行人), `people` (人), `bicycle` (自行车), `car` (汽车), `van` (杂货车), `truck` (卡车), `tricycle` (三轮车), `awning-tricycle` (遮阳三轮车), `bus` (公交车), `motor` (摩托车)。
+
+> **注意**：本项目提供的 `convert_visdrone_to_yolo.py` 转换脚本在生成标签时，会自动过滤掉 `Ignored regions` (0) 和 `Others` (11) 类别，并剔除严重遮挡 (`occlusion >= 2`) 或截断 (`truncation > 0.7`) 的低质量样本，以优化微小目标的训练效果。
 
 ## 数据准备
 - 默认由 Ultralytics 在首次训练/评估时自动下载并解压至 `datasets/VisDrone/`。

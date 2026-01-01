@@ -133,7 +133,7 @@ def train_model(config_path, experiment_name, epochs=EPOCHS, device=0):
         project=PROJECT,
         
         # 消融实验优化
-        workers=2,
+        workers=4,
         amp=True,
         cache=False,
         patience=30,  # 早停
