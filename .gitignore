@@ -1,0 +1,32 @@
+# Byte-compiled / cache
+*.py[cod]
+__pycache__/
+
+# Jupyter artifacts
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+*.html
+
+github-recovery-codes.txt
+
+
+
+pytorch_model.bin
+
+
+*.zip
+
+*.o
+
+# 忽略 Word、Excel、PowerPoint 产生的临时文件
+~$*.doc*
+~$*.xls*
+~$*.ppt*
+
+*.tmp
+
+*.log
+
+/datasets/
+/runs/
+*.pt
