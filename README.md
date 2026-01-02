@@ -1,4 +1,4 @@
-# YOLOv11n-P2 (VisDrone) 微小目标检测
+# YOLOv11n-Aerial (VisDrone) 微小目标检测
 
 基于 YOLOv11n 的无人机航拍微小目标检测，加入 P2 高分辨率检测头与空洞卷积以提升微小目标召回；支持消融实验、评估与 SAHI 切片推理。
 
@@ -113,7 +113,8 @@ python demo_inference.py
 - **指标缺失**：确保 `results.csv` 生成；若仅有权重，先运行 `model.val()` 或重新训练生成指标。
 - **复现性**：脚本默认设定随机种子 42；如需更强确定性，可启用 `torch.backends.cudnn.deterministic = True`（可能降速）。
 
-## 致谢与引用
+## 引用
 - YOLOv11: https://docs.ultralytics.com/
 - SAHI: https://github.com/obss/sahi
 - VisDrone: http://aiskyeye.com/
+
